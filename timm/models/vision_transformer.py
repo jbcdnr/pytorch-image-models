@@ -23,6 +23,7 @@ Hacked together by / Copyright 2020 Ross Wightman
 import torch
 import torch.nn as nn
 from functools import partial
+import collections
 
 from timm.data import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 from .helpers import load_pretrained
@@ -116,11 +117,12 @@ class Attention(nn.Module):
         attn = (q @ k.transpose(-2, -1)) * self.scale
         attn = attn.softmax(dim=-1)
         attn = self.attn_drop(attn)
+        stats = {"attention": attn}
 
         x = (attn @ v).transpose(1, 2).reshape(B, N, C)
         x = self.proj(x)
         x = self.proj_drop(x)
-        return x
+        return x, stats
 
 
 class Block(nn.Module):
@@ -138,9 +140,10 @@ class Block(nn.Module):
         self.mlp = Mlp(in_features=dim, hidden_features=mlp_hidden_dim, act_layer=act_layer, drop=drop)
 
     def forward(self, x):
-        x = x + self.drop_path(self.attn(self.norm1(x)))
+        y, stats = self.attn(self.norm1(x))
+        x = x + self.drop_path(y)
         x = x + self.drop_path(self.mlp(self.norm2(x)))
-        return x
+        return x, stats
 
 
 class PatchEmbed(nn.Module):
@@ -271,16 +274,19 @@ class VisionTransformer(nn.Module):
         x = x + self.pos_embed
         x = self.pos_drop(x)
 
+        stats = collections.defaultdict(lambda: [])
         for blk in self.blocks:
-            x = blk(x)
+            x, blk_stats = blk(x)
+            for k, v in blk_stats.items():
+                stats[k].append(v.detach())
 
         x = self.norm(x)
-        return x[:, 0]
+        return x[:, 0], dict(stats)
 
     def forward(self, x):
-        x = self.forward_features(x)
+        x, stats = self.forward_features(x)
         x = self.head(x)
-        return x
+        return x, stats
 
 
 def _conv_filter(state_dict, patch_size=16):
